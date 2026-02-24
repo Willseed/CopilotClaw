@@ -249,7 +249,7 @@ function buildModelSwitchRow(chatId: number, currentModel: string | undefined): 
     if (modelIndex !== -1) {
       // Use abbreviated model name for button text
       const shortName = model.replace('claude-', '').replace('.', '');
-      row.push({ text: `⚡${shortName}`, callback_data: `set_model:${modelIndex}` });
+      row.push({ text: `⚡${shortName}`, callback_data: `set_model:${model}` });
     }
   }
 
@@ -1029,6 +1029,7 @@ console.log(`[DEBUG] Bot started at ${botStartTime}`);
 // --- Sleep/idle keepalive and auto-recovery ---
 let lastTickTime = Date.now();
 let lastRecoveryTime = 0;
+let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
 const HEALTH_CHECK_INTERVAL = 30_000; // 30 seconds
 const TIME_JUMP_THRESHOLD = 60_000;   // 60 seconds = likely sleep
 const RECOVERY_DEBOUNCE = 30_000;     // minimum 30s between recovery attempts
@@ -1255,12 +1256,12 @@ bot.onText(/^\/model(?:\s+(\d+))?/, async (msg, match) => {
       const row = [];
       const model1 = availableModels[i];
       const prefix1 = model1 === currentModel ? '✓ ' : '';
-      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${i}` });
+      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${model1}` });
 
       if (i + 1 < availableModels.length) {
         const model2 = availableModels[i + 1];
         const prefix2 = model2 === currentModel ? '✓ ' : '';
-        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${i + 1}` });
+        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${model2}` });
       }
 
       inlineKeyboard.push(row);
@@ -1599,12 +1600,12 @@ bot.on('callback_query', async (query) => {
       const row = [];
       const model1 = availableModels[i];
       const prefix1 = model1 === currentModel ? '✓ ' : '';
-      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${i}` });
+      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${model1}` });
 
       if (i + 1 < availableModels.length) {
         const model2 = availableModels[i + 1];
         const prefix2 = model2 === currentModel ? '✓ ' : '';
-        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${i + 1}` });
+        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${model2}` });
       }
 
       inlineKeyboard.push(row);
@@ -1711,17 +1712,15 @@ bot.on('callback_query', async (query) => {
 
   // Handle model selection from inline keyboard
   if (query.data?.startsWith('set_model:')) {
-    const indexStr = query.data.replace('set_model:', '');
-    const index = parseInt(indexStr, 10);
-    console.log(`[DEBUG] Model selection callback from chatId: ${chatId}, index: ${index}`);
+    const selectedModel = query.data.replace('set_model:', '');
+    console.log(`[DEBUG] Model selection callback from chatId: ${chatId}, model: ${selectedModel}`);
 
-    if (isNaN(index) || index < 0 || index >= availableModels.length) {
-      console.log(`[DEBUG] Invalid model index from callback: ${index}`);
-      await bot.answerCallbackQuery(query.id, { text: '無效的模型編號' });
+    if (!selectedModel || !availableModels.includes(selectedModel)) {
+      console.log(`[DEBUG] Invalid model from callback: ${selectedModel}`);
+      await bot.answerCallbackQuery(query.id, { text: '無效的模型，請重新選擇' });
       return;
     }
 
-    const selectedModel = availableModels[index];
     console.log(`[DEBUG] Selected model via callback: ${selectedModel}`);
 
     await bot.answerCallbackQuery(query.id, { text: `選擇：${selectedModel}` });
@@ -1925,6 +1924,7 @@ process.on('SIGCONT', () => {
 process.on('SIGINT', async () => {
   console.log('[DEBUG] Received SIGINT, shutting down...');
   clearInterval(healthCheckTimer);
+  healthCheckTimer = undefined;
 
   // Stop Telegram polling to avoid library errors during shutdown
   try {
@@ -2093,7 +2093,7 @@ async function getProviderInfo(): Promise<string> {
 }
 
 // Sleep/idle detection timer
-const healthCheckTimer = setInterval(async () => {
+healthCheckTimer = setInterval(async () => {
   const now = Date.now();
   const elapsed = now - lastTickTime;
   lastTickTime = now;
@@ -2116,13 +2116,13 @@ healthCheckTimer.unref();
   }
 
   try {
-    await bot.startPolling();
-    console.log('開始接聽 Telegram 發來的請求...');
-
-    // Get and display provider information
+    // Fetch dynamic model list before accepting user commands
     console.log('\n⏳ 正在取得 Copilot SDK 資訊...');
     const providerInfo = await getProviderInfo();
     console.log('\n' + providerInfo);
+
+    await bot.startPolling();
+    console.log('開始接聽 Telegram 發來的請求...');
 
     // Send welcome message to owner if configured
     if (ownerChatId && !isNaN(ownerChatId)) {
