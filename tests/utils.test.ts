@@ -12,6 +12,9 @@ import {
   splitLongMessage,
   formatToolResults,
   availableModels,
+  defaultModels,
+  getAvailableModels,
+  updateAvailableModels,
   sessionEmojis,
   defaultModel,
 } from '../src/utils.js';
@@ -367,7 +370,28 @@ describe('formatToolResults', () => {
 });
 
 describe('constants', () => {
+  describe('defaultModels', () => {
+    it('should contain expected models', () => {
+      expect(defaultModels).toContain('gpt-5-mini');
+      expect(defaultModels).toContain('claude-sonnet-4');
+      expect(defaultModels).toContain('gemini-3-pro-preview');
+    });
+
+    it('should have correct number of models', () => {
+      expect(defaultModels.length).toBe(14);
+    });
+  });
+
   describe('availableModels', () => {
+    afterEach(() => {
+      // Restore to defaults after each test
+      updateAvailableModels([...defaultModels]);
+    });
+
+    it('should initially match defaultModels', () => {
+      expect(availableModels).toEqual(defaultModels);
+    });
+
     it('should contain expected models', () => {
       expect(availableModels).toContain('gpt-5-mini');
       expect(availableModels).toContain('claude-sonnet-4');
@@ -376,6 +400,23 @@ describe('constants', () => {
 
     it('should have correct number of models', () => {
       expect(availableModels.length).toBe(14);
+    });
+  });
+
+  describe('updateAvailableModels / getAvailableModels', () => {
+    afterEach(() => {
+      updateAvailableModels([...defaultModels]);
+    });
+
+    it('should update availableModels', () => {
+      updateAvailableModels(['model-a', 'model-b']);
+      expect(getAvailableModels()).toEqual(['model-a', 'model-b']);
+    });
+
+    it('should reflect changes in the exported availableModels binding', () => {
+      updateAvailableModels(['x']);
+      // Re-import is a live binding for `let` exports in ESM
+      expect(getAvailableModels()).toEqual(['x']);
     });
   });
 

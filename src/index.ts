@@ -96,8 +96,9 @@ if (!telegramToken) {
 // Optional: Owner chat ID for auto-greeting on startup
 const ownerChatId = process.env.OWNER_CHAT_ID ? parseInt(process.env.OWNER_CHAT_ID, 10) : undefined;
 
-// Available Copilot models
-const availableModels = [
+// Available Copilot models – initialised from the default (fallback) list and
+// updated dynamically at startup when the Copilot SDK returns a model catalogue.
+const defaultModels = [
   'claude-sonnet-4.5',
   'claude-haiku-4.5',
   'claude-opus-4.5',
@@ -113,6 +114,7 @@ const availableModels = [
   'gpt-4.1',
   'gemini-3-pro-preview',
 ];
+let availableModels = [...defaultModels];
 
 // Default model for Copilot sessions. Override with COPILOT_MODEL environment
 // variable. See the Copilot SDK README for supported model names.
@@ -247,7 +249,7 @@ function buildModelSwitchRow(chatId: number, currentModel: string | undefined): 
     if (modelIndex !== -1) {
       // Use abbreviated model name for button text
       const shortName = model.replace('claude-', '').replace('.', '');
-      row.push({ text: `⚡${shortName}`, callback_data: `set_model:${modelIndex}` });
+      row.push({ text: `⚡${shortName}`, callback_data: `set_model:${model}` });
     }
   }
 
@@ -1024,6 +1026,72 @@ const bot = new TelegramBot(telegramToken, { polling: { autoStart: false } });
 const botStartTime = Math.floor(Date.now() / 1000);
 console.log(`[DEBUG] Bot started at ${botStartTime}`);
 
+// --- Sleep/idle keepalive and auto-recovery ---
+let lastTickTime = Date.now();
+let lastRecoveryTime = 0;
+let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
+const HEALTH_CHECK_INTERVAL = 30_000; // 30 seconds
+const TIME_JUMP_THRESHOLD = 60_000;   // 60 seconds = likely sleep
+const RECOVERY_DEBOUNCE = 30_000;     // minimum 30s between recovery attempts
+
+async function recoverFromSleep(): Promise<void> {
+  const now = Date.now();
+  if (now - lastRecoveryTime < RECOVERY_DEBOUNCE) {
+    console.log('[KEEPALIVE] Recovery debounced, skipping');
+    return;
+  }
+  lastRecoveryTime = now;
+  console.log('[KEEPALIVE] Starting recovery from sleep/idle...');
+
+  // 1. Restart Telegram polling
+  try {
+    bot.stopPolling();
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    await bot.startPolling();
+    console.log('[KEEPALIVE] Telegram polling restarted successfully');
+  } catch (err) {
+    console.error('[KEEPALIVE] Error restarting Telegram polling:', err);
+  }
+
+  // 2. Check and log Copilot session states (sessions auto-recover on next message)
+  for (const [chatId, state] of chatStates) {
+    if (state.session && state.dir) {
+      try {
+        console.log(`[KEEPALIVE] Checking session health for chatId: ${chatId}`);
+      } catch (err) {
+        if (isDisposedConnectionError(err)) {
+          console.log(`[KEEPALIVE] Session disposed for chatId: ${chatId}, will recover on next message`);
+        }
+      }
+    }
+  }
+
+  // 3. Notify owner about recovery
+  if (ownerChatId && !isNaN(ownerChatId)) {
+    try {
+      const nowStr = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+      await bot.sendMessage(ownerChatId, `🔄 系統已從休眠中恢復 (${nowStr})\nTelegram 連線已重新建立。`);
+    } catch (err) {
+      console.error('[KEEPALIVE] Failed to notify owner about recovery:', err);
+    }
+  }
+}
+
+// Handle Telegram polling errors with auto-recovery
+bot.on('polling_error', (err: Error) => {
+  console.error('[KEEPALIVE] Telegram polling error:', err.message);
+  if (/ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN/i.test(err.message)) {
+    console.log('[KEEPALIVE] Network-related polling error detected, scheduling recovery...');
+    const now = Date.now();
+    if (now - lastRecoveryTime >= RECOVERY_DEBOUNCE) {
+      lastTickTime = now;
+      recoverFromSleep().catch(recoveryErr => {
+        console.error('[KEEPALIVE] Error during polling error recovery:', recoveryErr);
+      });
+    }
+  }
+});
+
 // Wrap sendMessage to include a concise header showing who is speaking and the
 // per-chat session emoji. Cast to any to avoid TypeScript overload conflicts.
 // Also set parse_mode to MarkdownV2 for proper formatting.
@@ -1188,12 +1256,12 @@ bot.onText(/^\/model(?:\s+(\d+))?/, async (msg, match) => {
       const row = [];
       const model1 = availableModels[i];
       const prefix1 = model1 === currentModel ? '✓ ' : '';
-      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${i}` });
+      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${model1}` });
 
       if (i + 1 < availableModels.length) {
         const model2 = availableModels[i + 1];
         const prefix2 = model2 === currentModel ? '✓ ' : '';
-        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${i + 1}` });
+        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${model2}` });
       }
 
       inlineKeyboard.push(row);
@@ -1532,12 +1600,12 @@ bot.on('callback_query', async (query) => {
       const row = [];
       const model1 = availableModels[i];
       const prefix1 = model1 === currentModel ? '✓ ' : '';
-      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${i}` });
+      row.push({ text: `${prefix1}${model1}`, callback_data: `set_model:${model1}` });
 
       if (i + 1 < availableModels.length) {
         const model2 = availableModels[i + 1];
         const prefix2 = model2 === currentModel ? '✓ ' : '';
-        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${i + 1}` });
+        row.push({ text: `${prefix2}${model2}`, callback_data: `set_model:${model2}` });
       }
 
       inlineKeyboard.push(row);
@@ -1644,17 +1712,15 @@ bot.on('callback_query', async (query) => {
 
   // Handle model selection from inline keyboard
   if (query.data?.startsWith('set_model:')) {
-    const indexStr = query.data.replace('set_model:', '');
-    const index = parseInt(indexStr, 10);
-    console.log(`[DEBUG] Model selection callback from chatId: ${chatId}, index: ${index}`);
+    const selectedModel = query.data.replace('set_model:', '');
+    console.log(`[DEBUG] Model selection callback from chatId: ${chatId}, model: ${selectedModel}`);
 
-    if (isNaN(index) || index < 0 || index >= availableModels.length) {
-      console.log(`[DEBUG] Invalid model index from callback: ${index}`);
-      await bot.answerCallbackQuery(query.id, { text: '無效的模型編號' });
+    if (!selectedModel || !availableModels.includes(selectedModel)) {
+      console.log(`[DEBUG] Invalid model from callback: ${selectedModel}`);
+      await bot.answerCallbackQuery(query.id, { text: '無效的模型，請重新選擇' });
       return;
     }
 
-    const selectedModel = availableModels[index];
     console.log(`[DEBUG] Selected model via callback: ${selectedModel}`);
 
     await bot.answerCallbackQuery(query.id, { text: `選擇：${selectedModel}` });
@@ -1845,9 +1911,20 @@ bot.on('message', async (msg) => {
   }
 });
 
+// Handle resume from suspend (SIGCONT)
+process.on('SIGCONT', () => {
+  console.log('[KEEPALIVE] Received SIGCONT (resume from suspend)');
+  lastTickTime = Date.now();
+  recoverFromSleep().catch(err => {
+    console.error('[KEEPALIVE] Error during SIGCONT recovery:', err);
+  });
+});
+
 // Graceful shutdown on process termination
 process.on('SIGINT', async () => {
   console.log('[DEBUG] Received SIGINT, shutting down...');
+  clearInterval(healthCheckTimer);
+  healthCheckTimer = undefined;
 
   // Stop Telegram polling to avoid library errors during shutdown
   try {
@@ -1965,6 +2042,11 @@ async function getProviderInfo(): Promise<string> {
     // Models info
     if (models.status === 'fulfilled' && models.value.length > 0) {
       const modelList = models.value as ModelInfo[];
+
+      // Update the available models dynamically
+      availableModels = modelList.map(m => m.id);
+      console.log(`[DEBUG] Dynamic model list updated: ${availableModels.length} models loaded`);
+
       info += `🤖 可用模型（共 ${modelList.length} 個）\n`;
       
       // Group models by provider (infer from model ID)
@@ -2010,6 +2092,19 @@ async function getProviderInfo(): Promise<string> {
   }
 }
 
+// Sleep/idle detection timer
+healthCheckTimer = setInterval(async () => {
+  const now = Date.now();
+  const elapsed = now - lastTickTime;
+  lastTickTime = now;
+
+  if (elapsed > TIME_JUMP_THRESHOLD) {
+    console.log(`[KEEPALIVE] Time jump detected: ${Math.round(elapsed / 1000)}s elapsed (expected ~${HEALTH_CHECK_INTERVAL / 1000}s). System likely resumed from sleep.`);
+    await recoverFromSleep();
+  }
+}, HEALTH_CHECK_INTERVAL);
+healthCheckTimer.unref();
+
 (async () => {
   try {
     const dropped = await clearPendingUpdates(bot);
@@ -2021,13 +2116,13 @@ async function getProviderInfo(): Promise<string> {
   }
 
   try {
-    await bot.startPolling();
-    console.log('開始接聽 Telegram 發來的請求...');
-
-    // Get and display provider information
+    // Fetch dynamic model list before accepting user commands
     console.log('\n⏳ 正在取得 Copilot SDK 資訊...');
     const providerInfo = await getProviderInfo();
     console.log('\n' + providerInfo);
+
+    await bot.startPolling();
+    console.log('開始接聽 Telegram 發來的請求...');
 
     // Send welcome message to owner if configured
     if (ownerChatId && !isNaN(ownerChatId)) {

@@ -195,9 +195,9 @@ export function formatToolResults(rawResults: any): string | undefined {
 }
 
 /**
- * Available Copilot models.
+ * Default (fallback) Copilot models used when dynamic fetching is unavailable.
  */
-export const availableModels = [
+export const defaultModels: string[] = [
   'claude-sonnet-4.5',
   'claude-haiku-4.5',
   'claude-opus-4.5',
@@ -213,6 +213,26 @@ export const availableModels = [
   'gpt-4.1',
   'gemini-3-pro-preview',
 ];
+
+/**
+ * Available Copilot models. Starts with the default list and can be updated
+ * at runtime via {@link updateAvailableModels}.
+ */
+export let availableModels: string[] = [...defaultModels];
+
+/**
+ * Replace the available models list at runtime (e.g. after fetching from the API).
+ */
+export function updateAvailableModels(models: string[]): void {
+  availableModels = models;
+}
+
+/**
+ * Return the current available models list.
+ */
+export function getAvailableModels(): string[] {
+  return availableModels;
+}
 
 /**
  * Pool of emojis to assign to sessions.
